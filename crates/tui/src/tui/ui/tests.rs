@@ -32222,3 +32222,92 @@ async fn provider_switch_back_lands_on_root_default_owned_by_that_provider() {
     assert_eq!(app.api_provider, ApiProvider::Openai);
     assert_eq!(app.model, "gpui-fixture");
 }
+
+fn long_session_history(turns: usize) -> Vec<HistoryCell> {
+    let mut cells = Vec::with_capacity(turns * 4);
+    for turn in 0..turns {
+        cells.push(HistoryCell::User {
+            content: format!("question {turn}: please look at the render path"),
+        });
+        cells.push(HistoryCell::Thinking {
+            content: (0..8)
+                .map(|row| format!("reasoning {turn}.{row} about the transcript"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            streaming: false,
+            duration_secs: Some(1.0),
+        });
+        cells.push(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "exec_shell".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some(format!("cargo check {turn}")),
+            output: Some("ok\nfinished".to_string()),
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        })));
+        cells.push(HistoryCell::Assistant {
+            content: format!(
+                "Answer {turn}.\n\n- point one\n- point two\n\n```rust\nfn f() {{}}\n```"
+            ),
+            streaming: false,
+        });
+    }
+    cells
+}
+
+/// Full-frame scroll benchmark for #6652; run with `--ignored --nocapture`.
+#[test]
+#[ignore = "timing benchmark, not a correctness gate"]
+#[allow(clippy::print_stderr)]
+fn bench_full_frame_scroll_cost_by_history_length() {
+    for turns in [100usize, 1_000] {
+        let mut app = create_test_app();
+        app.history = long_session_history(turns);
+        app.resync_history_revisions();
+        let config = Config::default();
+        let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = super::frame::render(frame, &mut app, &config);
+            })
+            .unwrap();
+        let frames = 200u32;
+        let started = Instant::now();
+        for _ in 0..frames {
+            app.viewport.pending_scroll_delta = -3;
+            app.needs_redraw = true;
+            terminal
+                .draw(|frame| {
+                    let _ = super::frame::render(frame, &mut app, &config);
+                })
+                .unwrap();
+        }
+        let elapsed = started.elapsed();
+        eprintln!(
+            "#6652 full-frame: {} cells, {} lines, {:?}/scroll frame",
+            app.history.len(),
+            app.viewport.transcript_cache.total_lines(),
+            elapsed / frames
+        );
+        // Chrome that grows or shrinks (composer lines, toasts, turn rows)
+        // changes the transcript height without changing its width.
+        let started = Instant::now();
+        for frame in 0..frames {
+            let height = if frame % 2 == 0 { 41 } else { 40 };
+            terminal.backend_mut().resize(140, height);
+            app.needs_redraw = true;
+            terminal
+                .draw(|frame| {
+                    let _ = super::frame::render(frame, &mut app, &config);
+                })
+                .unwrap();
+        }
+        eprintln!(
+            "#6652 full-frame: {} cells, {:?}/height-change frame",
+            app.history.len(),
+            started.elapsed() / frames
+        );
+    }
+}

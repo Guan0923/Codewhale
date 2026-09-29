@@ -1794,6 +1794,58 @@ fn retargeting_a_long_transcript_repaints_only_the_hint_rows() {
     assert!(!plain_lines(&cache).join("\n").contains("Space:expand"));
 }
 
+/// Composer growth, toasts, and turn chrome change the viewport height. That
+/// height only sizes the newest reasoning preview, so a long history must
+/// not re-render and re-flatten on each change (#6652).
+#[test]
+fn viewport_height_change_rebuilds_only_the_newest_cell() {
+    let (cells, revisions) = long_reasoning_transcript(100);
+    let ensure = |cache: &mut TranscriptViewCache, cells: &[HistoryCell], viewport: usize| {
+        let revisions = vec![1; cells.len()];
+        cache.ensure_split(
+            &[cells],
+            &revisions,
+            80,
+            TranscriptRenderOptions {
+                reasoning_preview_viewport_lines: Some(viewport),
+                ..TranscriptRenderOptions::default()
+            },
+            &HashMap::new(),
+            None,
+            Some(reasoning_owner(0)),
+        );
+    };
+    assert_eq!(revisions.len(), cells.len());
+    let mut cache = TranscriptViewCache::new();
+    ensure(&mut cache, &cells, 30);
+    let total = cache.total_lines();
+    assert!(total > 800, "{total}");
+
+    for viewport in [31, 24, 40, 30] {
+        let before = cache.streaming_lines_reflattened();
+        ensure(&mut cache, &cells, viewport);
+        let rows = cache.streaming_lines_reflattened() - before;
+        assert!(
+            rows < 40,
+            "viewport {viewport} re-flattened {rows} of {total} rows"
+        );
+        let mut cold = TranscriptViewCache::new();
+        ensure(&mut cold, &cells, viewport);
+        assert_same_flat_output(&cache, &cold);
+    }
+
+    // A short transcript whose newest reasoning cell grows into free rows
+    // must still track the height through the warm cache.
+    let short = vec![reasoning_cell(false), reasoning_cell(false)];
+    let mut warm = TranscriptViewCache::new();
+    for viewport in [18, 34, 18, 26] {
+        ensure(&mut warm, &short, viewport);
+        let mut cold = TranscriptViewCache::new();
+        ensure(&mut cold, &short, viewport);
+        assert_same_flat_output(&warm, &cold);
+    }
+}
+
 /// While a reply streams its cell is dirty every frame. Scrolling in that
 /// state must still repaint only the hint rows plus the streamed tail, not
 /// re-flatten everything below the old owner (#6652).

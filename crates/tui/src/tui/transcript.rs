@@ -302,7 +302,15 @@ impl TranscriptViewCache {
             self.identity_epoch = Some(owner.identity_epoch);
         }
         self.transcript_action_owner = action_owner;
-        let layout_changed = self.width != width || self.options != options || identity_changed;
+        // The viewport height only sizes the newest reasoning cell's preview
+        // (the post-flatten pass below); every other cell renders the same at
+        // any height. Composer growth, toasts, and turn chrome resize the
+        // viewport often, so treating it as layout re-rendered the whole
+        // history on each change, a cost that grew with the session (#6652).
+        let viewport_changed = self.options.reasoning_preview_viewport_lines
+            != options.reasoning_preview_viewport_lines;
+        let layout_changed =
+            self.width != width || !same_layout_options(self.options, options) || identity_changed;
         let folded_changed = self.thinking_folds != *thinking_folds;
         // `todo_write` replaces the whole list on every call, so only the
         // newest snapshot is worth a full card (#5871). When a new one lands
@@ -346,6 +354,7 @@ impl TranscriptViewCache {
         // index is removed and later filled by a different cell.
         let old_len = self.per_cell.len();
         let mut any_dirty = layout_changed
+            || viewport_changed
             || folded_changed
             || work_receipt_changed
             || user_turn_changed
@@ -989,6 +998,18 @@ fn strip_cell_local_tool_rail(line: &mut Line<'static>) {
         .is_some_and(|span| matches!(span.content.as_ref(), "─ " | "╭ " | "│ " | "╰ "))
     {
         line.spans.remove(0);
+    }
+}
+
+/// Options equal apart from the viewport height, which only the newest
+/// reasoning cell's preview reads.
+fn same_layout_options(a: TranscriptRenderOptions, b: TranscriptRenderOptions) -> bool {
+    TranscriptRenderOptions {
+        reasoning_preview_viewport_lines: None,
+        ..a
+    } == TranscriptRenderOptions {
+        reasoning_preview_viewport_lines: None,
+        ..b
     }
 }
 
